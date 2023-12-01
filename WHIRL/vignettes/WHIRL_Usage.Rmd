@@ -1,0 +1,249 @@
+---
+title: "WHIRL_Usage"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{WHIRL_Usage}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  fig.width = 10,
+  fig.height = 8
+)
+```
+
+```{r setup}
+# devtools::build_rmd("vignettes/WHIRL_Usage.Rmd")
+# library(devtools)
+# library(ggplot2)
+# load_all()
+library(WHIRL)
+data("processed_hurdat")
+```
+
+## Analysis Q1: Plot tracks of storm in 2020, 2021, 2022.
+```{r Analysis 1}
+# plot storm's track
+
+get_stormp <- function(processed_hurdat,year){
+  idx = grep(paste("^",year,sep=""),processed_hurdat$Date)
+  id.year = unique(processed_hurdat[idx,1])
+  p <- WHIRL::plot_storm_tracks(processed_hurdat,id.year)
+  p <- p + ggplot2::labs(title=paste("Storm Tracks ",year,sep=""))
+  return(p)}
+
+for (i in c("2020","2021","2022")){
+pi = get_stormp(processed_hurdat,i)
+print(pi)}
+
+```
+
+## Analysis Q2: Plot the position and size of Hurricanes Katrina (2005), Sandy (2012), Harvey (2017), and Ian (2022).
+```{r Analysis 2, warning=FALSE}
+# plot storm's size and range
+
+listQ2 = list(name=c("katrina","sandy","harvey","ian"),
+              year=c("2005","2012","2017","2022"))
+for (i in 1:length(listQ2$name)) {
+  tempi = WHIRL::plot_storm_size_helper(processed_hurdat,
+                                        listQ2$name[i],
+                                        listQ2$year[i])
+  pi = WHIRL::plot_storm_size(tempi[1,],tempi[-1,])
+  print(pi)
+}
+
+
+```
+
+## Analysis Q3: Create a new dataframe with storm id, name, maximum wind speed, minimum pressure, indicator for landfall, accumulated cyclone energy.
+```{r analysis 3}
+# get the dataframe df for storm and their relavant information
+unique.storm.id = unique(processed_hurdat$ID)
+
+df = data.frame(matrix(nrow = length(unique.storm.id),ncol = 6))
+colnames(df) = c("ID","Name","Maximum.Wind","Minimum.Pressure","Landfall","CumE")
+df[,1] = unique.storm.id
+for (i in 1:nrow(df)){
+  storm.id.i = unique.storm.id[i]
+  dfi = subset(processed_hurdat,ID == unique.storm.id[i])
+  df[i,2:6] = c(
+    dfi$Name[1],
+    if (all(is.na(dfi$"Maximum.Wind"))) {NA} else     # if all NA then NA
+            max(dfi$"Maximum.Wind",na.rm=TRUE),
+    if (all(is.na(dfi$"Minimum.Pressure"))) {NA} else # if all NA then NA
+              min(dfi$"Minimum.Pressure",na.rm=TRUE),
+    if (is.logical(WHIRL::landfall(dfi,storm.id.i))) FALSE else TRUE, 
+    WHIRL::cumE(dfi,storm.id.i)
+  )
+}
+head(df)
+```
+
+## Analysis Q4: Include 2 additional plots.
+We found that the most of the maximum sustained speed (>0) of the recorded hurricane is about 30 knots. But that of hurricanes that landed is about 70 knots and 90 knots.
+```{r Analysis Q4}
+plot_density <- function(dat,coli){
+  wind.df = dat[,coli]
+  idx.0 = which(wind.df>0)
+  wind.df.filtered = as.vector(wind.df[idx.0])
+  names(wind.df.filtered) = coli
+  
+  # maximum wind with speed >0 and landed
+  idx.land = which(df$Landfall==TRUE)
+  wind.df.land = as.vector(wind.df[intersect(idx.0,idx.land)]) # the storm that landed
+  names(wind.df.land) = paste(coli,"land",sep=".")
+  
+  
+  df0 = data.frame(values=c(wind.df.filtered,wind.df.land),
+                  group=c(rep(paste(coli,">0",sep=""),
+                              length(wind.df.filtered)),
+                          rep(paste("landed",coli,">0",sep=""),
+                            length(wind.df.land)) )
+                    )
+  p0 = ggplot2::ggplot(df0, ggplot2::aes(x = values, fill = group)) + 
+    # Draw overlaying density
+    ggplot2::geom_density(position = "identity", alpha = 0.2)
+  return(p0)
+  }
+# maximum wind with speed >0
+for (coli in c("Maximum.Wind","Minimum.Pressure")){
+  pi = plot_density(processed_hurdat,coli)
+  print(pi)
+  }
+
+```
+
+## Analysis Q5: Is the number of landfalling hurricanes increasing over time.
+```{r Analysis 5}
+hur = processed_hurdat
+hur_l = hur[grepl("L",hur$Landfall)==T,]
+hur_l$year = as.numeric(format(as.Date(hur_l$Date, format = "%Y%m%d"), "%Y"))
+hur_by_year = as.data.frame(table(hur_l$year))
+colnames(hur_by_year) = c("Year","Count")
+hur_by_year$Year = as.numeric(hur_by_year$Year)
+hur_by_year$Year = hur_by_year$Year + 1850
+lm = lm(Count ~ Year, data = hur_by_year)
+summary(lm)
+
+ggplot2::ggplot(hur_by_year, 
+                ggplot2::aes(x = Year, y = Count)) +
+  ggplot2::geom_line(color = "blue") +
+  ggplot2::labs(title = "Number of Landfalling Hurricanes in the United States Over Time",
+       x = "Year",
+       y = "Count")+
+  ggplot2::geom_smooth(method = "loess", color = "green")
+
+
+
+hur_by_year$YearGroup <- cut(hur_by_year$Year, breaks = seq(1850, 2020, by = 5))
+hur_by_year$AvgCount <- ave(hur_by_year$Count, hur_by_year$YearGroup, FUN = mean)
+hur_by_year = hur_by_year[-c(171,172),]
+before = subset(hur_by_year, Year <= 1935)
+after = subset(hur_by_year, Year >= 1936)
+t.test(before$AvgCount,after$AvgCount, alternative = "le")
+hur_bf_af = data.frame(Count = c(before$AvgCount, after$AvgCount),
+                         Time = c(rep("Before 1935", length(before$AvgCount)),
+                                   rep("After 1935", length(after$AvgCount)))
+)
+ggplot2::ggplot(hur_bf_af, 
+                ggplot2::aes(x = Count, fill = Time)) + 
+  ggplot2::geom_density(position = "identity", alpha = 0.2)
+
+```
+Based on the analysis, it appears that the number of landfalling hurricanes in the United States has been increasing over time. The linear regression model shows a statistically significant positive relationship between the number of landfalling hurricanes and year, with an estimated increase of 0.08 hurricanes per year (p < 2.2e-16).
+
+The graph of the number of landfalling hurricanes over time also shows an increasing trend, with some fluctuations over the years.
+
+Additionally, the t-test comparing the average number of landfalling hurricanes before and after 1935 shows a statistically significant difference, with an average of 4.02 hurricanes before 1935 and 11.15 hurricanes after 1935 (t = -12.663, df = 74.841, p-value < 2.2e-16). The density plot also shows that the distribution of landfalling hurricanes after 1935 is shifted to the right compared to before 1935.
+
+Therefore, the analysis suggests that the number of landfalling hurricanes in the United States has been increasing over time.
+
+## Analysis Q6: Is the intensity of tropical cyclones increasing over time?
+```{r Analysis 6}
+speed = processed_hurdat
+speed$year = as.numeric(format(as.Date(speed$Date, format = "%Y%m%d"), "%Y"))
+speed_by_year = as.data.frame(table(speed$year))
+colnames(speed_by_year) = c("Year","Speed")
+speed_by_year$Year = as.numeric(speed_by_year$Year)
+speed_by_year$Year = speed_by_year$Year + 1850
+speed_by_year = subset(speed_by_year, Speed >= 0)
+lm = lm(Speed ~ Year, data = speed_by_year)
+summary(lm)
+
+ggplot2::ggplot(speed_by_year, 
+                ggplot2::aes(x = Year, y = Speed)) +
+ ggplot2::geom_line(color = "blue") +
+  ggplot2::labs(title = "Speed of Hurricanes in the United States Over Time",
+       x = "Year",
+       y = "Speed")+
+  ggplot2::geom_smooth(method = "loess", color = "green")
+
+speed_by_year$YearGroup <- cut(speed_by_year$Year, breaks = seq(1850, 2020, by = 5))
+speed_by_year$AvgSpeed <- ave(speed_by_year$Speed, speed_by_year$YearGroup, FUN = mean)
+speed_by_year = speed_by_year[-c(171,172),]
+before = subset(speed_by_year, Year <= 1935)
+after = subset(speed_by_year, Year >= 1936)
+t.test(unique(before$AvgSpeed),unique(after$AvgSpeed), alternative = "le")
+speed_bf_af = data.frame(Speed = c(unique(before$AvgSpeed), unique(after$AvgSpeed)),
+                         Time = c(rep("Before 1935", length(before$AvgSpeed)),
+                                   rep("After 1935", length(after$AvgSpeed)))
+)
+ggplot2::ggplot(speed_bf_af, 
+                ggplot2::aes(x = Speed, fill = Time)) + 
+  ggplot2::geom_density(position = "identity", alpha = 0.2)
+
+
+```
+The linear regression model indicates that the intensity of tropical cyclones has increased significantly over time in the United States, as evidenced by a positive coefficient estimate for the Year predictor variable (slope of 2.3981 with p-value < 2e-16) and a relatively high R-squared value of 0.4656.
+
+Furthermore, the Welch Two Sample t-test comparing the average speeds of hurricanes before and after 1935 (chosen as a breakpoint due to a change in measurement methods) suggests that there is a significant difference in means between the two groups (t = -5.7124, df = 31.244, p-value = 1.356e-06), with hurricanes after 1935 having significantly higher average speeds than those before.
+
+The density plot also shows a clear shift to higher speeds in the "After 1935" group, providing additional evidence for the increasing intensity of tropical cyclones in the United States over time.
+
+
+## Analysis Q7: Find a claim made in the media made about tropical cyclones and climate change. Check what ChatGPT has to say about the claim.
+
+I found a news from [CNN](http://www.cnn.com/SPECIALS/2005/katrina/) about Hurricane Katrina 2005.
+
+*Voices from the Gulf Coast:*
+
+August 29, 2005: Hurricane Katrina made landfall on the Gulf Coast, destroying lives, leveling homes and leaving thousands of survivors with the same story: We lost everything. One year later, many still coped with Katrina's devastation. Some had moved forward, but for others recovery was at a standstill. CNN.com visited the region to get their stories.
+
+*ChatGPT Answers:*
+
+As an artificial intelligence language model, I don't have feelings, but I can analyze the claim made in the statement. The claim is about the impact of Hurricane Katrina, which made landfall on the Gulf Coast in 2005, and its effects on the lives of people in the region. The statement suggests that the hurricane caused significant damage and destruction, resulting in many people losing everything they had, and that the recovery process was challenging for many, even a year after the event.
+
+Based on the extensive coverage of the event and its aftermath, it is widely accepted that Hurricane Katrina was a catastrophic event that caused significant damage and loss of life. Many people were displaced, and the recovery process was slow and difficult. The statement's claim is consistent with the facts and the experiences of people who were affected by the hurricane.
+```{r Analysis 7}
+gulf = data.frame(new_lon=c(-86.0659), new_lat=c(25.3043),Name=c("Gulf Coast"))
+
+katrina = plot_storm_size_helper(processed_hurdat, "katrina", "2005")
+lat.katrina = katrina$Latitude - gulf$new_lat
+tol = 1e-2
+idx.lat.katrina = which(lat.katrina <= tol)
+longi.katrina = katrina$Longitude[idx.lat.katrina]
+logic.land = any((longi.katrina - gulf$new_lon) <= tol)
+if (logic.land){
+  print("Katrina 2005 indeed landed in Gulf Coast area (e.g., 25.3043° N, 86.0659° W) from our data analysis.")
+}
+
+
+tempi = WHIRL::plot_storm_size_helper(processed_hurdat,
+                                        "katrina",
+                                        "2005")
+pi = WHIRL::plot_storm_size(tempi[1,],tempi[-1,])
+pi + ggplot2::geom_point(data=gulf,
+                          ggplot2::aes(x = new_lon, y = new_lat),
+                          color = "skyblue",
+                          size = 3) + 
+  ggplot2::geom_text(data = gulf,
+                         ggplot2::aes(x = new_lon,
+                                      y = new_lat,
+                                      label = Name),
+                     size = 3, vjust = 2, fontface = "bold",
+                         hjust = 1, color="skyblue")
+```

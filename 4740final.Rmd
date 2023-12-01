@@ -1,0 +1,315 @@
+---
+title: "STSCI 4740 Final Project"
+author: "Jason Pan, Caroline He, Claire Makino-Duan, Ruitong Liu"
+date: "`r Sys.Date()`"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(reshape2)
+library(leaps)
+library(glmnet)
+library(class)
+library(gam)
+library(caret)
+library(e1071)
+library(broom)
+library(randomForest)
+library(caret)
+library(mgcv)
+library(ordinal)
+```
+
+## Dataset Inspection
+```{r}
+df = read.csv("wine-quality-white-and-red.csv", header = T)
+head(df)
+dim(df)
+which(is.na(df)==T)
+unique(df$type)
+summary(df)
+```
+\newpage
+
+## EDA
+```{r}
+# Variable correlation
+cor_mat = round(cor(df[,c(-1)]),digits = 2)
+cor_mat = melt(cor_mat, value.name = "correlation")
+head(cor_mat)
+ggplot(data = cor_mat, aes(x=Var1, y=Var2, fill=correlation)) + 
+  geom_tile()+
+  ggtitle("Correlation Heat Map")+
+  theme(axis.text.x = element_text(angle=45, hjust=1),
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank())+
+  geom_text(aes(Var2, Var1, label = correlation), color = "white", size = 3.2)
+
+# Response/predictor correlation
+cor_mat = as.data.frame(cor(df[,c(-1)], df$quality))
+colnames(cor_mat) = "Correlation with Quality"
+cor_mat
+par(mfrow= c(2,3))
+for (i in 2:ncol(df)) {
+  boxplot(df[,i], main=colnames(df)[i])
+}
+par(mfrow= c(3,4))
+for (i in 2:ncol(df)) {
+  hist(df[,i], main=colnames(df)[i])
+}
+
+# scatterplot matrix
+# df$type <- as.factor(df$type)
+# df$quality <- as.factor(df$quality)
+# png("scatterMatrix.png", width = 1200, height = 1000)
+# pairs(df)
+# dev.off()
+
+# features with multicollinearity
+# density + alcohol. density is dropped 
+# total sulfur + free sulfur. Free sulfur is kept bc of higher correlation with the response
+df <- subset(df, select = -c(density, free.sulfur.dioxide))
+
+```
+\newpage
+
+# Best Subset Algorithm
+```{r}
+best = regsubsets(quality~.,data = df, nvmax = 10)
+subsets = summary(best)
+data.frame(
+  Adj.R2 = which.max(subsets$adjr2),
+  CP = which.min(subsets$cp),
+  BIC = which.min(subsets$bic),
+  row.names = "Number of predictors"
+)
+get_model_formula = function(id, object, outcome){
+  models = summary(object)$which[id,-1]
+  predictors = names(which(models == TRUE))
+  predictors = paste(predictors, collapse = " + ")
+  as.character(paste0(outcome, " ~ ", predictors))
+}
+get_predictors = function(id, object){
+  models = summary(object)$which[id,-1]
+  predictors = names(which(models == TRUE))
+  as.array(predictors)
+}
+
+# 6 predictors based on BIC
+mod_6 = get_model_formula(6,best,"quality")
+pred_6 = get_predictors(6,best)
+mod_6
+pred_6
+
+#bic comparison
+#par(mfrow=c(1,3))
+#plot(su.full, scale = "adjr2")
+plot(best, scale = "bic")
+```
+\newpage
+# Train & Test Splitting
+```{r}
+set.seed(21)
+# following model selection
+df['typewhite'] = ifelse(df$type == "white",1,0)
+df = df[,-1]
+df = subset(df, select = c(pred_6,"quality"))
+#train_ind = sample(1:nrow(df), nrow(df)/2)
+train_ind <- createDataPartition(df$quality, p = 0.7, list = FALSE)
+# Used 70% to train
+
+train = df[train_ind,]
+y_ind = which(colnames(df) == "quality")
+x_tr = as.data.frame(train[,-y_ind])
+y_tr = as.data.frame(train[y_ind])
+
+test = df[-train_ind,]
+test = test[-1,]
+x_te = as.data.frame(test[,-y_ind])
+y_te = as.data.frame(test[,y_ind])
+
+```
+\newpage
+
+# Data Scaling
+```{r}
+# scale features
+x_tr_scaled = scale(x_tr)
+x_te_scaled = scale(
+  x_te,
+  center = attr(x_tr_scaled, "scaled:center"),
+  scale = attr(x_tr_scaled, "scaled:scale")
+)
+# convert matrix array to dataframe
+x_tr_scaled <- as.data.frame(x_tr_scaled)
+x_te_scaled <- as.data.frame(x_te_scaled)
+
+# scaled training dataset with response
+train_scaled <- cbind(x_tr_scaled, y_tr)
+
+```
+
+# LASSO Regression & Ridge
+```{r}
+# Lasso Regression
+set.seed(1)
+cv.out=cv.glmnet(as.matrix(x_tr_scaled),as.matrix(y_tr),alpha=1)
+plot(cv.out)
+best_lam=cv.out$lambda.min
+lasso=glmnet(as.matrix(x_tr_scaled),as.matrix(y_tr),alpha=1,lambda=best_lam)
+coef(lasso)
+coef(lasso)[,1][coef(lasso)[,1]==0]
+
+y = round(predict(lasso, s = best_lam, as.matrix(x_te_scaled)),digits = 0)
+mean(y== y_te)
+
+# Ridge Regression
+cv.out=cv.glmnet(as.matrix(x_tr_scaled),as.matrix(y_tr),alpha=0)
+plot(cv.out)
+best_lam=cv.out$lambda.min
+ridge=glmnet(as.matrix(x_tr_scaled),as.matrix(y_tr),alpha=0,lambda=best_lam)
+coef(ridge)
+coef(ridge)[,1][coef(ridge)[,1]==0]
+
+y = round(predict(ridge, s = best_lam, as.matrix(x_te_scaled)),digits = 0)
+mean(y== y_te)
+```
+\newpage
+
+# Multiple Linear Regression
+```{r warning=FALSE}
+mlr = lm(quality~., data = train_scaled)
+pred = predict(mlr, newdata = x_te_scaled)
+
+# apply rounding criteria
+pred <- ifelse(pred < 3, 3, pred)
+pred <- ifelse(pred > 9, 9, pred)
+
+mean(y_te==round(pred,digits = 0))
+
+mlr %>%
+  augment() %>%
+  melt(measure.vars = pred_6, variable.name = "IV") %>%
+  ggplot(., aes(value, quality)) +
+  geom_smooth(method = "glm") +
+  facet_wrap(~IV, scales = "free_x")
+
+
+
+```
+
+\newpage
+
+# KNN
+```{r}
+set.seed(123)
+k = seq(1,201, by = 5)
+knn_cv = function(k) {
+  pred=knn(x_tr_scaled,x_te_scaled,y_tr$quality,k = k)
+  return(mean(pred!=as.matrix(y_te)))
+}
+knn_err = unlist(lapply(k, knn_cv))
+knn_err = data.frame(k,knn_err)
+min_err = which(knn_err$knn_err == min(knn_err$knn_err))
+
+ggplot(knn_err, aes(x = k, y = knn_err)) + 
+  geom_line() +
+  ggtitle("KNN Error with Different K") +
+  xlab("K") +
+  ylab("Error") +
+  geom_point(data = data.frame(x = knn_err[1,1], y=knn_err[1,2]), 
+             aes(x , y ), color = 'red', size = 3)
+pred=knn(x_tr_scaled,x_te_scaled,y_tr$quality,k = k[min_err])
+accuracy = mean(pred==as.matrix(y_te))
+accuracy
+
+### Another knn fitting method
+model_knn <- train(quality ~ ., data = train, method = "knn", trControl = trainControl(method = "cv"))
+model_knn
+pred_knn <- as.integer(predict(model_knn, newdata = test))
+mean(pred_knn==y_te)
+```
+\newpage
+
+# Naive Bayes
+```{r}
+set.seed(123)
+nb.fit = naiveBayes(quality~., data = train)
+pred = predict(nb.fit, newdata = x_te)
+
+mean(pred==y_te$`test[, y_ind]`)
+```
+\newpage
+
+
+# GAM
+```{r}
+set.seed(123)
+colname = colnames(x_tr)
+gam = gam::gam(quality~.,data = train)
+summary(gam)
+pred = round(predict(gam, newdata = x_te),digits = 0)
+
+# apply rounding criteria
+pred <- ifelse(pred < 3, 3, pred)
+pred <- ifelse(pred > 9, 9, pred)
+
+mean(pred==y_te$`test[, y_ind]`)
+
+# pl <- MASS::polr(as.factor(quality)~., data = train, method = "logistic")
+# summary(pl)
+# 
+# pred = predict(pl, newdata = x_te)
+# mean(pred==y_te$`test[, y_ind]`)
+
+
+```
+\newpage
+
+# Random Forest
+```{r}
+set.seed(123)
+
+# hyperparameter tuning: rf grid search for best mtry
+# train$quality <- as.factor(train$quality)
+control <-
+  trainControl(
+    method = "cv",
+    number = 10,
+    search = "grid"
+  )
+tune_grid <- expand.grid(mtry = c(1:6))
+
+rf_gridsearch <-
+  train(
+    as.factor(quality) ~ .,
+    data = train,
+    method = "rf",
+    metric = "Accuracy",
+    tuneGrid = tune_grid,
+    trControl = control,
+    ntree = 1000
+  )
+print(rf_gridsearch)
+plot(rf_gridsearch)
+best_mtry <- rf_gridsearch$bestTune$mtry
+
+rf_model = randomForest(as.factor(quality) ~ .,
+                        data = train,
+                        mtry = best_mtry,
+                        ntree = 1000)
+pred = predict(rf_model, x_te)
+# Accuracy of prediction
+mean(pred == as.factor(y_te$`test[, y_ind]`))
+rf_model
+
+```
