@@ -1,0 +1,320 @@
+---
+title: 'BIOCB 4381: Biomedical Data Mining & Modelling'
+author: "Jason Pan"
+date: "2023-10-24"
+output:
+  html_document:
+    latex_engine: xelatex
+---
+
+# Midterm (For BIOCB 4381 Students)
+
+##### THIS IS AN EXAM: You are supposed to do it independently. You can refer to any materials, but no collaboration is allowed. You can post questions on Ed Discussion only when you need further clarification. Please follow the instructions and write your answers in this Rmarkdown document. For submission, please make sure that you submit both the Rmarkdown file and the Knited html file on Canvas.
+
+### Release: October 26, 2023; Due 11:59pm EST, November 17, 2023
+
+```{r setup, include=FALSE, fig.height= 12, fig.width= 15}
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  eval = TRUE
+)
+```
+
+##### In this Midterm project, you will be using the scRNA-seq data from [Shun et al.](https://www.pnas.org/doi/abs/10.1073/pnas.2008762117?url_ver=Z39.88-2003&rfr_id=ori:rid:crossref.org&rfr_dat=cr_pub%20%200pubmed) and they profiled *169,496* nuclei from the prefrontal cortical samples of AD patients and healthy controls by single-nucleus RNA sequencing.
+
+## Before you diving into the questions, please make sure you download the following files from Canvas and make sure you have every file in one folder in your machine:
+
+1.  `seurat.rds`: the dataset you will process, located in the `data` folder
+
+2.  `Midterm_4381.Rmd`: Please write all your answers and code in this file
+
+3.  `Midterm_4381.html`: Please knit the `.Rmd` file into a html file to better show your code, results, plots and answers.
+
+4.  `images`: a folder for PCA coverage image
+
+For submission, please upload both `Midterm_4381.Rmd` and `Midterm_4381.html` ***ON CANVAS***. (**If you really had a hard time knit the .html file, you can just upload your .Rmd on Canvas**)
+
+### Load Libraries (Please make sure you can intall all those packages and load them correctly)
+
+```{r}
+library(Seurat)
+library(DESeq2)
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(RColorBrewer)
+library(ggrepel)
+set.seed(1234)
+```
+
+# Part 1: scRNA-seq Standard Workflow
+
+## (10 pts) Q1.1 Load Data as a Seurat Object (.rds file) and make two new columns.
+
+```{r}
+rds_obj = readRDS('seurat.rds')
+head(rds_obj)
+```
+
+If you check the rownames of the meta.data in the seurat object, you will find that the rownames look like `AD1_AAACCCAAGCTGAAAT-1`, which the `AD1` indicates not only the sample ID but also the condition of the cell. Therefore, please use generate two new columns `Sample` (AD1,...NC18) and `Condition` (AD or Control). Please use `head()` to show your metadata after you add those two columns.
+
+You should get **179,392** cells with **33,538** features (Seurat Object Size should be \~ **8.6** GB)
+
+```{r}
+rds_obj = AddMetaData(object = rds_obj, metadata = gsub('_.*', '', rownames(rds_obj@meta.data)), col.name = 'Sample')
+rds_obj = AddMetaData(object = rds_obj, metadata = ifelse(grepl('AD.*', gsub('_.*', '', rownames(rds_obj@meta.data))), 'AD', 'Control'), col.name = 'Condition')
+rds_obj
+```
+
+## (5 pts) Q1.2 Quality Control and Filtering
+
+Please calculate the percentage of mitochondria counts by using ***PercentageFeatureSet()*** and draw the violin plot of 3 QC metrics:
+
+-   Number of molecules detected in one cell
+
+-   Number of genes detected in one cell
+
+-   Percentage of mitochondria genes in one cell
+
+```{r}
+rds_obj[["percent.mt"]] = PercentageFeatureSet(rds_obj, pattern = "^MT-")
+VlnPlot(rds_obj, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+Besides, To exclude po-tential dead cells and cell debris from the dataset, we filtered out nuclei with $≤ 200$ or $≥ 2500$ genes, $≥ 20000$ unique molecular identifiers, or $≥ 5%$ mitochondrial genes
+
+```{r}
+subset = subset(rds_obj, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5 & nCount_RNA < 20000)
+head(subset@meta.data)
+sum(subset@meta.data$nCount_RNA)
+length(subset@meta.data$orig.ident)
+length(unique(subset@meta.data$Sample))
+```
+
+### Please answer the following questions:
+
+1.  How many genes are identified in this study?
+
+**ANSWER: 237613572**
+
+2.  How many cells are sequenced in this study?
+
+**ANSWER: 109106**
+
+3.  How many samples are included in this study?
+
+**ANSWER: 21**
+
+## (5 pts) Q1.3 Normalizing data and find highly variable features
+
+Please normalize the data and find and **show** the top10 highly variable features
+
+```{r}
+subset = NormalizeData(subset, normalization.method = "LogNormalize", scale.factor = 10000)
+
+subset = FindVariableFeatures(subset, selection.method = "vst", nfeatures = 2000)
+
+top10 = head(VariableFeatures(subset), 10)
+
+plot1 = VariableFeaturePlot(subset)
+LabelPoints(plot = plot1, points = top10, repel = TRUE)
+
+```
+
+## (5 pts) Q1.4 Sacle data and run PCA (Please set the dimension for PCA to be 50)
+
+```{r}
+subset = ScaleData(subset)
+pca = RunPCA(subset) #default 50 pc's
+```
+
+## (20 pts) Q1.5 Determine the dimensionailty
+
+In lab section, we have discussed to use the Elbow Plot to determine the dimensionailty of the dataset, but a more systematic method is to PCA coverage Plot.
+
+In order to get this plot, we have to calculate the eigenvalues of each PCA and find its percentage of all PCAs. To calculate the eigenvalue ($\lambda$), we just need to find the standard deviation ($\sigma$) of the PCA which is already inside the Seurat object. (e.g. $\lambda_{PCA1} = \sigma_{PCA1}^2$)
+
+Then, we need to calculate the overall percentage of each PCA. For instance, for PCA1: $$percentage_{PCA1} = {\lambda_{PCA1} \over sum(\lambda_{PCA1}, ..., \lambda_{PCA50})} \times 100$$ Therefore, to make the PCA Coverage plot:
+
+-   Please find the standard deviation ($\sigma$) of each PCA in the Seurat object
+
+-   Calculate the percentage of each PCA over all PCAs (50 PCAs in total)
+
+-   Draw the plot to show your results (No matter what tool you use)
+
+```{r}
+pca_res = pca[["pca"]] 
+sd = pca_res@stdev
+eigen = sd^2
+total = sum(eigen)
+coverage = sapply(eigen, function(x) x*100/total)
+df = data.frame(x = 1:50, y = coverage)
+
+ggplot(df,aes(x=y)) +
+  geom_point(aes(x = x, y = y)) + 
+  geom_line(aes(x = x, y = y)) +
+  labs(title = "PCA Variance Coverage", x = "Principal Component", y = "% Variance Explained")
+
+#determine dim
+sum = 0
+num = 0
+for (i in 1:length(eigen)) {
+  sum = sum + eigen[i]
+  if (sum >= 0.9*total) {
+    num = i
+    break
+  }
+} 
+num
+```
+
+To determine the dimensionailty of the data, we just need to determine how much percentage of data we want the PCAs to cover and find how many components we should include, by determine the cumulative sum. For instance, for PCA10: $$cumulative.sum = sum(percentage_{PCA1}, ..., percentage_{PCA10})$$
+
+### Please answer the following question:
+
+How many principle components should we choose to include to cover over 90% of the data?
+
+**ANSWER: 24 PC's**
+
+## (5 pts) Q1.6 UMAP and Clustering
+
+Please use the dimension you determined from previous question to run UMAP to show cell clusters.
+
+```{r}
+umap = FindNeighbors(pca, dims = 1:24)
+umap = FindClusters(umap, resolution = 0.1) #used 0.1 resolution to find less amount of clusters
+umap = RunUMAP(umap, dims = 1:24)
+DimPlot(umap, reduction = "umap")
+```
+
+### Please answer the following question:
+
+How many clusters are presented in the UMAP?
+
+**ANSWER: 11**
+
+## (15 pts) Q1.7 Finding differentially expressed genes and identify cell types
+
+Please use the table below to assign the cluster with its cell type and draw the UMAP with cell type label. Make sure to generate a new column (cell_type) in `seu.filtered@meta.data` that indicate the cell type for each cell.
+
+`Caution: The running time for FindAllMarkers will take a while`
+
+| Cluster ID | Markers                        | Cell Type                  |
+|------------|--------------------------------|----------------------------|
+| 0          | CTNNA3, ST18                   | Oligo (Oligodendrocytes)   |
+| 1,7,10     | RALYL, MAP1B,TSHZ2             | Excit (Excitatory neurons) |
+| 2          | ADGRV1, SLC1A2                 | Astro (Astrocyte)          |
+| 3,4,6,9    | LHFPL3,ADARB2,KIAA1217,ZNF385D | Inhit (Inhibitory neurons) |
+| 5          | LRMDA, DOCK8                   | Mic (Microglia)            |
+| 8          | FLT1, CLDN5                    | Endo (Endothelial cells)   |
+
+```{r}
+markers = FindAllMarkers(umap, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+markers %>%
+    group_by(cluster) %>%
+    slice_max(n = 2, order_by = avg_log2FC)
+
+
+#Assign cell type to each cluster
+new.cluster.ids = c("Oligo", "Excit", "Astro", "Inhit", "Inhit", "Mic", "Inhit", "Excit", "Endo", "Inhit", "Excit")
+names(new.cluster.ids) = levels(umap)
+umap_res = RenameIdents(umap, new.cluster.ids)
+umap_res$cell_type = new.cluster.ids[Idents(umap_res)]
+head(umap_res)
+DimPlot(umap_res, reduction = "umap", label = TRUE, pt.size = 0.5) 
+```
+
+## (15 pts) Q1.8 Volcano Plot
+
+Please draw the volcano plot to show the DE genes in Astrocytes and show gene names for the top30 enriched genes.
+
+```{r fig.width= 7, fig.height=10}
+astrocytes = subset(markers, subset = cluster == "2")
+head(astrocytes)
+
+astrocytes$delabel = ifelse(astrocytes$gene %in% head(astrocytes[order(astrocytes$p_val_adj), "gene"], 30),
+    astrocytes$gene, NA)
+
+ggplot(data = astrocytes, aes(x = avg_log2FC, y = -log10(p_val_adj), label = delabel)) +
+    geom_vline(xintercept = c(-1, 1), col = "gray", linetype = "dashed") + geom_hline(yintercept = -log10(0.05),
+    col = "gray", linetype = "dashed") + geom_point(size = 0.5)  + coord_cartesian(ylim = c(0,
+    400), xlim = c(-2, 5)) + labs(color = "Expression Level", x = expression("log"[2] * "FC"),
+    y = expression("-log"[10] * "p-value")) + scale_x_continuous(breaks = seq(-10, 10, 2)) +
+    scale_y_continuous(breaks = seq(0, 400, 100))+ ggtitle("Volcano Plot") +
+    geom_text_repel(max.overlaps = 1000)
+```
+
+# Part 2: Differential Expression Analysis (DESeq2 and GO term enrichment analysis)
+
+## (10 pts) Q2.1 Acquiring necessary metrics for aggregation across cells in a sample
+
+In the lab section, we have talked about the pseudo-bulk workflow to prepare the data for DESeq2 analysis. Please use the following instructions to prepare the data for DESeq2 analysis:
+
+Get the counts matrix in sample level:
+
+1.  Make a new column in the `meta.data` named `condition_sample` that contains the information of both the `Condition` (control or AD) and `Sample` (which sample it came from).
+
+2.  Use `AggregateExpression()` to aggregate the expression into sample level.
+
+3.  Make a dataframe that is the transpose of the aggregated expression. (rows will be the samples and columns will be the genes) and split this dataframe into different cell types (this should be a `Large list` data that contains **6** cell types)
+
+```{r}
+#step1
+q2 = umap_res
+q2 = AddMetaData(object = q2, metadata = paste(q2@meta.data$Condition, q2@meta.data$Sample, sep = '_'), 
+                 col.name ='condition_sample')
+#step2
+q2_agg = AggregateExpression(q2, group.by = c('cell_type',"condition_sample"), assays = "RNA", slot = "counts",
+    return.seurat = FALSE)
+q2_agg = t(q2_agg$RNA)
+
+#step3
+q2_agg = as.data.frame(q2_agg)
+
+splitRows = gsub("_.*", "", rownames(q2_agg))
+q2_agg_split = split.data.frame(q2_agg, f = factor(splitRows))
+
+q2_agg_split_mod = lapply(q2_agg_split, function(x) {
+    rownames(x) = gsub(".*_(.*)", "\\1", rownames(x))
+    t(x)
+})
+```
+
+## (10 pts) Q2.2 Run DESeq2 Analysis in Oligodendrocytes
+
+Please use the cutoffs of adjusted p value (FDR) \< 0.01 and abs(log2FoldChange) \> 0 to find the differentially expressed genes for `AD vs. Control`
+
+```{r}
+counts_oligo = q2_agg_split_mod$Oligo
+
+colData = data.frame(samples = colnames(counts_oligo))
+head(colData)
+
+library("tibble") ### column_to_rownames used in lab 8 requires this package
+colData = colData %>%
+    mutate(condition = ifelse(grepl("AD", samples), "AD", "Control")) %>%
+    column_to_rownames(var = "samples")
+
+dds = DESeqDataSetFromMatrix(countData = counts_oligo, colData = colData, design = ~condition)
+
+dds = DESeq(dds)
+
+res = results(dds, name = "condition_Control_vs_AD")
+res_data = as.data.frame(res)
+sorted_res_data = res_data[order(res_data$padj, abs(res_data$log2FoldChange)), ]
+
+des2_marker = res_data %>%
+    filter(abs(log2FoldChange) > 0, padj < 0.01)
+des2_marker
+```
+
+### Please answer the following question:
+
+How many DE genes you found by using DESeq2?
+
+**ANSWER: 3 DE genes: GDNF-AS1, SLC25A48, AC106729.1**
+
+# Congradulation!!! You have finished all the questions for the Midterm and I hope that you have learned something from this.
+
+Indeed! It was only after completing the project that I understood why this is a "research midterm project". It really cleared many doubts I had because previously I couldn't really follow the lab codes but after working through these operations on the seurat object, I was able to obtain a better picture of why and how these computational works, as well as what their results mean to us. Thanks so much for all your support and help :))
