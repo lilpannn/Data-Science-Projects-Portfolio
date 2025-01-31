@@ -1,6 +1,6 @@
-# Masters-Application-Protfolio
+# Data-Science-Projects-Protfolio
 
-This repository contains selected projects showcasing my technical strengths in graduate school applications
+This repository contains selected projects showcasing my technical strengths in data science.
 
 - Computational Biology Projecy: Implements neighbor join methods and newick tree generation to reconstruct phylogeny. Implements Maximum Likelihood Estimation to select the most likely phylogeny on an arbitrary number of taxa. 
 
